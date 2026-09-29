@@ -1,0 +1,66 @@
+None selected 
+
+Skip to content
+Using Gmail with screen readers
+in:sent 
+2 of 22
+(no subject)
+Inbox
+
+Mohammed Abdul
+Attachments
+Aug 7, 2026, 3:44 PM
+ 
+
+pokala vaishalimanu <pokalavaishalimanu@gmail.com>
+Attachments
+Sep 13, 2026, 4:23 PM
+to bhuvanadt.2507
+
+
+---------- Forwarded message ---------
+From: Mohammed Abdul <mohdabdul0420@gmail.com>
+Date: Fri, Aug 7, 2026, 3:44 PM
+Subject:
+To: <pokalavaishalimanu@gmail.com>
+
+
+
+
+ 3 Attachments
+  •  Scanned by Gmail
+#include <RadioLib.h>
+
+#define BUTTON_PIN 4
+
+SX1262 radio = new Module(5, 26, 14, 25);
+
+void setup() {
+
+  Serial.begin(115200);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  if (radio.begin(915.0) != RADIOLIB_ERR_NONE) {
+    Serial.println("LoRa Failed");
+    while (1);
+  }
+
+  Serial.println("Emergency Vehicle Ready");
+}
+
+void loop() {
+
+  if (digitalRead(BUTTON_PIN) == LOW) {
+
+    int state = radio.transmit("EMERGENCY");
+
+    if (state == RADIOLIB_ERR_NONE) {
+      Serial.println("Emergency Sent");
+    }
+
+    delay(500);
+  }
+}
+emergency ino code.txt
+Displaying vehicle1 ino code.txt.
