@@ -1,0 +1,399 @@
+None selected 
+
+Skip to content
+Using Gmail with screen readers
+in:sent 
+2 of 22
+(no subject)
+Inbox
+
+Mohammed Abdul
+Attachments
+Aug 7, 2026, 3:44 PM
+ 
+
+pokala vaishalimanu <pokalavaishalimanu@gmail.com>
+Attachments
+Sep 13, 2026, 4:23 PM
+to bhuvanadt.2507
+
+
+---------- Forwarded message ---------
+From: Mohammed Abdul <mohdabdul0420@gmail.com>
+Date: Fri, Aug 7, 2026, 3:44 PM
+Subject:
+To: <pokalavaishalimanu@gmail.com>
+
+
+
+
+ 3 Attachments
+  •  Scanned by Gmail
+#include <WiFi.h>
+#include <esp_now.h>
+#include <HardwareSerial.h>
+
+//================ UART =================
+
+#define RXD2 16
+#define TXD2 17
+
+HardwareSerial STM32(2);
+
+//================ Vehicle Packet =================
+
+typedef struct __attribute__((packed))
+{
+    float latitude;
+    float longitude;
+    uint16_t speed;
+    uint8_t brake;
+    uint8_t emergency;
+} VehicleData;
+
+//================ RSU Packet =================
+
+typedef struct __attribute__((packed))
+{
+    float distance;
+    uint8_t signal;
+    uint8_t collisionWarning;
+    uint8_t ambulanceAlert;
+} RSUData;
+
+//================ Global Variables =================
+
+VehicleData myVehicle;
+VehicleData vehicle2Data;
+
+RSUData rsuData;
+
+String uartBuffer = "";
+
+bool vehicle2Updated = false;
+bool rsuUpdated = false;
+
+//================ MAC Addresses =================
+
+// Vehicle 1 (THIS ESP32)
+// 10:06:1C:86:33:C0
+
+// Vehicle 2
+uint8_t vehicle2MAC[] =
+{
+    0x10, 0x06, 0x1C, 0x86, 0x33, 0xC0
+};
+
+// RSU
+uint8_t rsuMAC[] =
+{
+    0xBC, 0xDD, 0xC2, 0xD1, 0xD5, 0x60
+};
+
+//================ ESP-NOW Peer Info =================
+
+esp_now_peer_info_t peerVehicle2;
+esp_now_peer_info_t peerRSU;
+
+//================ Function Prototypes =================
+
+void OnDataRecv(const esp_now_recv_info_t *info,
+                const uint8_t *incomingData,
+                int len);
+
+void OnDataSent(const wifi_tx_info_t *info,
+                esp_now_send_status_t status);
+
+void readSTM32();
+void sendToRSU();
+void sendToVehicle2();
+void printData();
+void setup()
+{
+    Serial.begin(115200);
+
+    STM32.begin(115200,
+                SERIAL_8N1,
+                RXD2,
+                TXD2);
+
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+
+    Serial.print("WiFi Channel: ");
+    Serial.println(WiFi.channel());
+
+    Serial.println();
+    Serial.println("========== VEHICLE 1 ==========");
+    Serial.print("MAC : ");
+    Serial.println(WiFi.macAddress());
+
+    if (esp_now_init() != ESP_OK)
+    {
+        Serial.println("ESP-NOW Init Failed");
+
+        while (1);
+    }
+
+    esp_now_register_recv_cb(OnDataRecv);
+    esp_now_register_send_cb(OnDataSent);
+
+    //------------- RSU Peer -------------
+
+    memset(&peerRSU, 0, sizeof(peerRSU));
+
+    memcpy(peerRSU.peer_addr,
+           rsuMAC,
+           6);
+
+    peerRSU.channel = 0;
+    peerRSU.encrypt = false;
+
+    if (!esp_now_is_peer_exist(rsuMAC))
+    {
+        esp_now_add_peer(&peerRSU);
+    }
+
+    //------------- Vehicle 2 Peer -------------
+
+    memset(&peerVehicle2, 0, sizeof(peerVehicle2));
+
+    memcpy(peerVehicle2.peer_addr,
+           vehicle2MAC,
+           6);
+
+    peerVehicle2.channel = 0;
+    peerVehicle2.encrypt = false;
+
+   if (!esp_now_is_peer_exist(vehicle2MAC))
+{
+    if (esp_now_add_peer(&peerVehicle2) == ESP_OK)
+        Serial.println("Vehicle2 Peer Added");
+    else
+        Serial.println("Vehicle2 Peer FAILED");
+}
+
+    memset(&myVehicle, 0, sizeof(myVehicle));
+    memset(&vehicle2Data, 0, sizeof(vehicle2Data));
+    memset(&rsuData, 0, sizeof(rsuData));
+
+    Serial.println();
+    Serial.println("Vehicle 1 Ready");
+}
+//================ Send Callback =================
+
+void OnDataSent(const wifi_tx_info_t *info,
+                esp_now_send_status_t status)
+{
+    
+}
+
+//================ Receive Callback =================
+
+void OnDataRecv(const esp_now_recv_info_t *info,
+                const uint8_t *incomingData,
+                int len)
+{
+    //------------ Packet from RSU ------------
+
+    if (memcmp(info->src_addr, rsuMAC, 6) == 0)
+    {
+        if (len == sizeof(RSUData))
+        {
+            memcpy(&rsuData,
+                   incomingData,
+                   sizeof(RSUData));
+
+            rsuUpdated = true;
+
+            //Serial.println("Received from RSU");
+
+            // Forward signal to STM32
+            STM32.write(rsuData.signal);
+        }
+    }
+
+    //------------ Packet from Vehicle 2 ------------
+
+    else if (memcmp(info->src_addr, vehicle2MAC, 6) == 0)
+    {
+        if (len == sizeof(VehicleData))
+        {
+            memcpy(&vehicle2Data,
+                   incomingData,
+                   sizeof(VehicleData));
+
+            vehicle2Updated = true;
+
+            //Serial.println("Received packet from Vehicle 2");
+        }
+    }
+}
+
+//================ Read STM32 =================
+
+void readSTM32()
+{
+    while (STM32.available())
+    {
+        char c = STM32.read();
+
+        if (c == '\n')
+        {
+            int fields = sscanf(uartBuffer.c_str(),
+                                "%f,%f,%hu,%hhu,%hhu",
+                                &myVehicle.latitude,
+                                &myVehicle.longitude,
+                                &myVehicle.speed,
+                                &myVehicle.brake,
+                                &myVehicle.emergency);
+
+            if (fields == 5)
+            {
+                Serial.println("STM32 Updated");
+            }
+            else
+            {
+                Serial.println("UART Parse Error");
+            }
+
+            uartBuffer = "";
+        }
+        else if (c != '\r')
+        {
+            uartBuffer += c;
+        }
+    }
+}
+//================ Send to RSU =================
+
+void sendToRSU()
+{
+    esp_err_t result =
+        esp_now_send(rsuMAC,
+                     (uint8_t *)&myVehicle,
+                     sizeof(VehicleData));
+
+    if(result != ESP_OK)
+    {
+        Serial.println("Failed sending to RSU");
+    }
+}
+
+//================ Send to Vehicle 2 =================
+
+void sendToVehicle2()
+{
+    //Serial.println("Sending to Vehicle2...");
+    esp_err_t result =
+        esp_now_send(vehicle2MAC,
+                     (uint8_t *)&myVehicle,
+                     sizeof(VehicleData));
+
+    if(result != ESP_OK)
+    {
+        Serial.println("Failed sending to Vehicle 2");
+    }
+}
+
+//================ Print Data =================
+
+void printData()
+{
+    static unsigned long printTimer = 0;
+
+    if (millis() - printTimer < 1000)
+        return;
+
+    printTimer = millis();
+
+    Serial.println();
+    Serial.println("========== VEHICLE 1 ==========");
+
+    Serial.println();
+    Serial.println("My Vehicle");
+
+    Serial.print("Latitude : ");
+    Serial.println(myVehicle.latitude, 6);
+
+    Serial.print("Longitude : ");
+    Serial.println(myVehicle.longitude, 6);
+
+    Serial.print("Speed : ");
+    Serial.println(myVehicle.speed);
+
+    Serial.print("Brake : ");
+    Serial.println(myVehicle.brake ? "ON" : "OFF");
+
+    Serial.print("Emergency : ");
+    Serial.println(myVehicle.emergency ? "YES" : "NO");
+
+    Serial.println();
+
+    Serial.println("Vehicle 2");
+
+    Serial.print("Latitude : ");
+    Serial.println(vehicle2Data.latitude, 6);
+
+    Serial.print("Longitude : ");
+    Serial.println(vehicle2Data.longitude, 6);
+
+    Serial.print("Speed : ");
+    Serial.println(vehicle2Data.speed);
+
+    Serial.print("Brake : ");
+    Serial.println(vehicle2Data.brake ? "ON" : "OFF");
+
+    Serial.print("Emergency : ");
+    Serial.println(vehicle2Data.emergency ? "YES" : "NO");
+
+    Serial.println();
+
+    Serial.println("RSU");
+
+    Serial.print("Signal : ");
+
+    if (rsuData.signal == 0)
+        Serial.println("RED");
+    else if (rsuData.signal == 1)
+        Serial.println("YELLOW");
+    else
+        Serial.println("GREEN");
+
+    Serial.print("Distance : ");
+    Serial.print(rsuData.distance);
+    Serial.println(" m");
+
+    Serial.print("Collision : ");
+    Serial.println(rsuData.collisionWarning ? "WARNING" : "SAFE");
+
+    Serial.print("Ambulance : ");
+    Serial.println(rsuData.ambulanceAlert ? "YES" : "NO");
+
+    Serial.println("===============================");
+}
+//================ Main Loop =================
+
+void loop()
+{
+    // Read latest data from STM32
+    readSTM32();
+
+    // Send data every 100 ms
+    static unsigned long sendTimer = 0;
+
+    if (millis() - sendTimer >= 100)
+    {
+        sendTimer = millis();
+
+        sendToRSU();
+        sendToVehicle2();
+    }
+
+    // Print data every second
+    printData();
+
+    delay(5);
+}
+vehicle1 ino code.txt
+Displaying vehicle1 ino code.txt.
