@@ -1,0 +1,525 @@
+None selected 
+
+Skip to content
+Using Gmail with screen readers
+in:sent 
+1 of 22
+codes
+Inbox
+
+Mohammed Abdul
+Attachments
+Aug 7, 2026, 3:38 PM
+ 
+
+pokala vaishalimanu <pokalavaishalimanu@gmail.com>
+Attachments
+Sep 13, 2026, 4:23 PM
+to bhuvanadt.2507
+
+
+---------- Forwarded message ---------
+From: Mohammed Abdul <mohdabdul0420@gmail.com>
+Date: Fri, Aug 7, 2026, 3:38 PM
+Subject: codes
+To: <pokalavaishalimanu@gmail.com>
+
+
+
+
+ 3 Attachments
+  •  Scanned by Gmail
+#include <WiFi.h>
+#include <esp_now.h>
+#include <math.h>
+#include <string.h>
+#include <RadioLib.h>
+
+//================ LED Pins =================
+
+#define RED_LED        2
+#define YELLOW_LED     4
+#define GREEN_LED      16
+
+#define EARTH_RADIUS   6371000.0
+
+//================ SX1262 =================
+
+SX1262 radio = new Module(5, 26, 14, 25);
+
+//================ Vehicle Packet =================
+
+typedef struct __attribute__((packed))
+{
+    float latitude;
+    float longitude;
+    uint16_t speed;
+    uint8_t brake;
+    uint8_t emergency;
+
+} VehicleData;
+
+//================ RSU Packet =================
+
+typedef struct __attribute__((packed))
+{
+    float distance;
+    uint8_t signal;
+    uint8_t collisionWarning;
+    uint8_t ambulanceAlert;
+
+} RSUData;
+
+
+//================ Global Variables =================
+
+VehicleData vehicle1;
+VehicleData vehicle2;
+
+RSUData rsuData;
+
+String msg;
+
+volatile bool vehicle1Updated = false;
+volatile bool vehicle2Updated = false;
+
+bool ambulanceDetected = false;
+
+unsigned long ambulanceTimer = 0;
+
+//================ ESP-NOW Peers =================
+
+esp_now_peer_info_t peerVehicle1;
+esp_now_peer_info_t peerVehicle2;
+
+//================ Vehicle MAC Addresses =================
+
+// Vehicle 1
+
+uint8_t vehicle1MAC[] =
+{
+    0xBC, 0xDD, 0xC2, 0xD1, 0xD6, 0xF4
+};
+
+// Vehicle 2
+
+uint8_t vehicle2MAC[] =
+{
+    0x10, 0x06, 0x1C, 0x86, 0x33, 0xC0
+};
+
+//================ Traffic Signal =================
+
+enum SignalState
+{
+    GREEN,
+    YELLOW_TO_RED,
+    RED,
+    YELLOW_TO_GREEN
+};
+
+SignalState signalState = GREEN;
+
+unsigned long signalTimer = 0;
+
+const unsigned long GREEN_TIME  = 10000;
+const unsigned long YELLOW_TIME = 2000;
+const unsigned long RED_TIME    = 10000;
+//================ Function Prototypes =================
+
+void OnDataRecv(const esp_now_recv_info_t *info,
+                const uint8_t *incomingData,
+                int len);
+
+void OnDataSent(const wifi_tx_info_t *info,
+                esp_now_send_status_t status);
+
+void checkLoRa();
+
+double deg2rad(double deg);
+
+double calculateDistance(float lat1,
+                         float lon1,
+                         float lat2,
+                         float lon2);
+
+void updateTrafficSignal();
+
+void sendRSUData();
+
+void setup()
+{
+    Serial.begin(115200);
+
+    Serial.print("Initializing LoRa... ");
+
+    int state = radio.begin(915.0);
+
+    if(state != RADIOLIB_ERR_NONE)
+    {
+        Serial.println("LoRa Failed");
+
+        while(1);
+    }
+
+    Serial.println("LoRa Success");
+
+    //================ LEDs =================
+
+    pinMode(RED_LED, OUTPUT);
+    pinMode(YELLOW_LED, OUTPUT);
+    pinMode(GREEN_LED, OUTPUT);
+
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(YELLOW_LED, LOW);
+    digitalWrite(GREEN_LED, HIGH);
+
+    //================ WiFi =================
+
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+
+    Serial.println();
+    Serial.println("========== RSU ==========");
+
+    Serial.print("MAC : ");
+    Serial.println(WiFi.macAddress());
+
+    //================ ESP-NOW =================
+
+    if(esp_now_init() != ESP_OK)
+    {
+        Serial.println("ESP-NOW Init Failed");
+
+        while(1);
+    }
+
+    esp_now_register_recv_cb(OnDataRecv);
+    esp_now_register_send_cb(OnDataSent);
+
+    // Vehicle 1
+
+    memset(&peerVehicle1,0,sizeof(peerVehicle1));
+
+    memcpy(peerVehicle1.peer_addr,
+           vehicle1MAC,
+           6);
+
+    peerVehicle1.channel = 0;
+    peerVehicle1.encrypt = false;
+
+    esp_now_add_peer(&peerVehicle1);
+
+    // Vehicle 2
+
+    memset(&peerVehicle2,0,sizeof(peerVehicle2));
+
+    memcpy(peerVehicle2.peer_addr,
+           vehicle2MAC,
+           6);
+
+    peerVehicle2.channel = 0;
+    peerVehicle2.encrypt = false;
+
+    esp_now_add_peer(&peerVehicle2);
+
+    //================ Initial Values =================
+
+    memset(&vehicle1,0,sizeof(vehicle1));
+    memset(&vehicle2,0,sizeof(vehicle2));
+
+    rsuData.distance = 0;
+    rsuData.signal = 2;
+    rsuData.collisionWarning = 0;
+    rsuData.ambulanceAlert = 0;
+
+    signalTimer = millis();
+
+    Serial.println();
+    Serial.println("RSU READY");
+}
+void OnDataSent(const wifi_tx_info_t *info,
+                esp_now_send_status_t status)
+{
+    // Nothing required
+}
+
+void OnDataRecv(const esp_now_recv_info_t *info,
+                const uint8_t *incomingData,
+                int len)
+{
+    if(len != sizeof(VehicleData))
+        return;
+
+    if(memcmp(info->src_addr, vehicle1MAC, 6) == 0)
+    {
+        memcpy(&vehicle1,
+               incomingData,
+               sizeof(VehicleData));
+
+        vehicle1Updated = true;
+    }
+
+    else if(memcmp(info->src_addr,
+                   vehicle2MAC,
+                   6) == 0)
+    {
+        memcpy(&vehicle2,
+               incomingData,
+               sizeof(VehicleData));
+
+        vehicle2Updated = true;
+    }
+}
+//================ LoRa Receiver =================
+
+void checkLoRa()
+{
+    int state = radio.receive(msg);
+
+    if(state == RADIOLIB_ERR_NONE)
+    {
+        Serial.print("Received: ");
+        Serial.println(msg);
+
+        if(msg == "EMERGENCY")
+        {
+            ambulanceDetected = true;
+            ambulanceTimer = millis();
+
+            Serial.println("********************************");
+            Serial.println(" EMERGENCY VEHICLE DETECTED ");
+            Serial.println("********************************");
+        }
+    }
+
+    if(ambulanceDetected &&
+       millis() - ambulanceTimer > 2000)
+    {
+        ambulanceDetected = false;
+    }
+}
+//================ Distance Functions =================
+
+double deg2rad(double deg)
+{
+    return deg * PI / 180.0;
+}
+
+double calculateDistance(float lat1,
+                         float lon1,
+                         float lat2,
+                         float lon2)
+{
+    double dLat = deg2rad(lat2 - lat1);
+    double dLon = deg2rad(lon2 - lon1);
+
+    double a =
+        sin(dLat / 2) * sin(dLat / 2) +
+        cos(deg2rad(lat1)) *
+        cos(deg2rad(lat2)) *
+        sin(dLon / 2) *
+        sin(dLon / 2);
+
+    double c =
+        2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+
+    return EARTH_RADIUS * c;
+}
+//================ Traffic Signal =================
+
+void updateTrafficSignal()
+{
+    if(ambulanceDetected)
+    {
+        signalState = GREEN;
+
+        digitalWrite(RED_LED, LOW);
+        digitalWrite(YELLOW_LED, LOW);
+        digitalWrite(GREEN_LED, HIGH);
+
+        return;
+    }
+
+    unsigned long currentTime = millis();
+
+    switch(signalState)
+    {
+        case GREEN:
+
+            if(currentTime - signalTimer >= GREEN_TIME)
+            {
+                signalState = YELLOW_TO_RED;
+                signalTimer = currentTime;
+
+                digitalWrite(GREEN_LED, LOW);
+                digitalWrite(YELLOW_LED, HIGH);
+            }
+            break;
+
+        case YELLOW_TO_RED:
+
+            if(currentTime - signalTimer >= YELLOW_TIME)
+            {
+                signalState = RED;
+                signalTimer = currentTime;
+
+                digitalWrite(YELLOW_LED, LOW);
+                digitalWrite(RED_LED, HIGH);
+            }
+            break;
+
+        case RED:
+
+            if(currentTime - signalTimer >= RED_TIME)
+            {
+                signalState = YELLOW_TO_GREEN;
+                signalTimer = currentTime;
+
+                digitalWrite(RED_LED, LOW);
+                digitalWrite(YELLOW_LED, HIGH);
+            }
+            break;
+
+        case YELLOW_TO_GREEN:
+
+            if(currentTime - signalTimer >= YELLOW_TIME)
+            {
+                signalState = GREEN;
+                signalTimer = currentTime;
+
+                digitalWrite(YELLOW_LED, LOW);
+                digitalWrite(GREEN_LED, HIGH);
+            }
+            break;
+    }
+}
+//================ Send RSU Data =================
+
+void sendRSUData()
+{
+    esp_now_send(vehicle1MAC,
+                 (uint8_t *)&rsuData,
+                 sizeof(RSUData));
+
+    esp_now_send(vehicle2MAC,
+                 (uint8_t *)&rsuData,
+                 sizeof(RSUData));
+}
+//================ Main Loop =================
+
+void loop()
+{
+    // Check LoRa emergency packet
+    checkLoRa();
+
+    // Update traffic signal
+    updateTrafficSignal();
+
+    // Current signal state
+    switch(signalState)
+    {
+        case RED:
+            rsuData.signal = 0;
+            break;
+
+        case YELLOW_TO_RED:
+        case YELLOW_TO_GREEN:
+            rsuData.signal = 1;
+            break;
+
+        case GREEN:
+            rsuData.signal = 2;
+            break;
+    }
+
+    // Send ambulance status
+    rsuData.ambulanceAlert = ambulanceDetected;
+
+    // Calculate vehicle distance
+    if(vehicle1Updated && vehicle2Updated)
+    {
+        rsuData.distance =
+            calculateDistance(
+                vehicle1.latitude,
+                vehicle1.longitude,
+                vehicle2.latitude,
+                vehicle2.longitude);
+
+        rsuData.collisionWarning =
+            (rsuData.distance <= 15.0);
+
+        vehicle1Updated = false;
+        vehicle2Updated = false;
+    }
+
+    // Send RSU packet every 100 ms
+    static unsigned long sendTimer = 0;
+
+    if(millis() - sendTimer >= 100)
+    {
+        sendTimer = millis();
+        sendRSUData();
+    }
+
+    // Print every second
+    static unsigned long printTimer = 0;
+
+    if(millis() - printTimer >= 1000)
+    {
+        printTimer = millis();
+
+        Serial.println();
+        Serial.println("========== RSU ==========");
+
+        Serial.print("Signal : ");
+        if(rsuData.signal == 0)
+            Serial.println("RED");
+        else if(rsuData.signal == 1)
+            Serial.println("YELLOW");
+        else
+            Serial.println("GREEN");
+
+        Serial.print("Distance : ");
+        Serial.print(rsuData.distance);
+        Serial.println(" m");
+
+        Serial.print("Collision : ");
+        Serial.println(rsuData.collisionWarning ? "WARNING" : "SAFE");
+
+        Serial.print("Ambulance : ");
+        Serial.println(ambulanceDetected ? "YES" : "NO");
+
+        Serial.println();
+
+        Serial.println("Vehicle 1");
+        Serial.print("Latitude  : ");
+        Serial.println(vehicle1.latitude, 6);
+        Serial.print("Longitude : ");
+        Serial.println(vehicle1.longitude, 6);
+        Serial.print("Speed     : ");
+        Serial.print(vehicle1.speed);
+        Serial.println(" km/h");
+        Serial.print("Brake     : ");
+        Serial.println(vehicle1.brake ? "ON" : "OFF");
+
+        Serial.println();
+
+        Serial.println("Vehicle 2");
+        Serial.print("Latitude  : ");
+        Serial.println(vehicle2.latitude, 6);
+        Serial.print("Longitude : ");
+        Serial.println(vehicle2.longitude, 6);
+        Serial.print("Speed     : ");
+        Serial.print(vehicle2.speed);
+        Serial.println(" km/h");
+        Serial.print("Brake     : ");
+        Serial.println(vehicle2.brake ? "ON" : "OFF");
+
+        Serial.println("==========================");
+    }
+
+    delay(5);
+}
+rsu arduino code.txt
+Displaying vehicle 2 ino code.txt.
